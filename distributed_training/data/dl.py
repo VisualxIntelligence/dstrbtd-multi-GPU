@@ -2,7 +2,6 @@ import os
 import json
 import yaml
 import time
-import psutil
 import asyncio
 import torch
 import s3fs
@@ -113,10 +112,12 @@ class DatasetLoader(BatchLoader):
         self.shard_sizes = {}
 
         self.logger.info(f"WELCOME TO THE NEW DATALOADER! {self}")
-        self.logger.info(f"BUCKET: {self.BUCKET}")
-        self.logger.info(f"ACCOUNT_ID: {self.ACCOUNT_ID}")
-        self.logger.info(f"ACCESS_KEY: {self.ACCESS_KEY}")
-        self.logger.info(f"SECRET_KEY: {self.SECRET_KEY}")        
+
+        self.configs = []
+        self.shards = []
+        self.total_row_groups_loaded = 0
+        self.total_rows_loaded = 0
+
 
     def download_config(self, remote_path, local_path):
         """Download file from S3 if missing locally."""
@@ -157,6 +158,8 @@ class DatasetLoader(BatchLoader):
     async def load_shard(self, shard_path, max_row_groups=2, max_rows_per_group=1):
         """Load and tokenize text from a single shard."""
         buffer = []
+        row_groups_loaded = 0
+        rows_loaded = 0
         try:
             reader = await asyncio.to_thread(pq.ParquetFile, f"s3://{shard_path}", filesystem=self.fs)
         except Exception as e:
@@ -168,6 +171,9 @@ class DatasetLoader(BatchLoader):
             df = await asyncio.to_thread(row_group.to_pandas)
             df = df.head(max_rows_per_group)
 
+            row_groups_loaded += 1
+            rows_loaded += len(df)
+
             for row in df["text"]:
                 token_ids = self.tokenizer.encode(
                     row,
@@ -176,14 +182,18 @@ class DatasetLoader(BatchLoader):
                 )
                 token_ids.append(self.tokenizer.eos_token_id)
                 buffer.extend(token_ids)
+
+        self.total_row_groups_loaded += row_groups_loaded
+        self.total_rows_loaded += rows_loaded
+
         return buffer
+
 
     async def gather_configs_and_shards(self, configs=None, max_configs=3, max_shards=3):
         """Collect shard paths from multiple configs."""
         if configs is None:
             configs = await self.get_configs_async()
         configs = configs[:max_configs]
-        print(f"configs: {configs}")
 
         async def get_shards(config):
             return await asyncio.to_thread(self.list_shard_files, config)
@@ -191,8 +201,12 @@ class DatasetLoader(BatchLoader):
         shard_lists = await asyncio.gather(*(get_shards(c) for c in configs))
         all_shards = []
         for config, shards in zip(configs, shard_lists):
-            print(f"shards for {config}: {len(shards)}")
+            # print(f"shards for {config}: {len(shards)}")
             all_shards.extend(shards[:max_shards])
+
+        self.configs = configs
+        self.shards = all_shards
+
         return all_shards
 
     async def fetch_shard_data(self, shard_paths, max_row_groups=2, max_rows_per_group=1):
@@ -228,7 +242,6 @@ if __name__ == "__main__":
     loader.load_bucket_configs()
 
     start_time = time.perf_counter()
-    cpu_before = psutil.cpu_percent(interval=None)
 
     asyncio.run(loader.load_bucket_data_to_buffer(
         max_configs=max_configs,
@@ -237,11 +250,15 @@ if __name__ == "__main__":
         max_rows_per_group=max_rows_per_group
     ))
 
-    cpu_after = psutil.cpu_percent(interval=None)
     end_time = time.perf_counter()
-    print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s, CPU usage ~{cpu_after - cpu_before:.2f}%")
+    print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s")
 
-    print(f"len(loader.buffer): {len(loader.buffer)}")
+    print(f"- len(loader.configs): {len(loader.configs)} max_configs={max_configs}")
+    print(f"- len(loader.shards): {len(loader.shards)} max_shards={max_shards}")
+    print(f"- Row groups loaded: {loader.total_row_groups_loaded} max_row_groups={max_row_groups}")
+    print(f"- Rows loaded: {loader.total_rows_loaded} max_rows_per_group={max_rows_per_group}\n")
+
+    print(f"len(loader.buffer): {len(loader.buffer)}\n")
 
     loader.prepare_batches(batch_size=batch_size, sequence_length=sequence_length)
     print(f"Batches: {len(loader)}")
