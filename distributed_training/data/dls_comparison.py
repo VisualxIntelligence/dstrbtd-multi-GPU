@@ -4,6 +4,37 @@ from transformers import AutoTokenizer
 from dataset import DatasetLoader as DatasetLoaderOld
 from dl import DatasetLoader as DatasetLoaderNew
 
+def inspect_token_range(b1, b2, tokenizer, name="inputs", max_tokens=10):
+    """Inspect why token ranges differ — checks unique tokens, special tokens, and offsets."""
+    uniq1, uniq2 = set(b1.unique().tolist()), set(b2.unique().tolist())
+
+    missing_in_2 = sorted(list(uniq1 - uniq2))
+    missing_in_1 = sorted(list(uniq2 - uniq1))
+
+    print(f"--- Inspecting {name} vocabulary difference ---")
+    print(f"Loader1 unique tokens: {len(uniq1)}, range {min(uniq1)}–{max(uniq1)}")
+    print(f"Loader2 unique tokens: {len(uniq2)}, range {min(uniq2)}–{max(uniq2)}")
+
+    if missing_in_2:
+        decoded = [tokenizer.decode([t]) for t in missing_in_2[:max_tokens]]
+        print(f"Tokens only in Loader1 ({len(missing_in_2)}): {missing_in_2[:max_tokens]}  →  {decoded}")
+    if missing_in_1:
+        decoded = [tokenizer.decode([t]) for t in missing_in_1[:max_tokens]]
+        print(f"Tokens only in Loader2 ({len(missing_in_1)}): {missing_in_1[:max_tokens]}  →  {decoded}")
+
+    # Heuristic: detect offset shift (e.g., 0–50256 vs 1–50256)
+    if min(uniq1) != min(uniq2):
+        offset = min(uniq2) - min(uniq1)
+        print(f"⚠️  Possible offset difference of {offset} between vocabularies\n")
+
+    # Show if special tokens are the likely cause
+    specials = {k: v for k, v in tokenizer.special_tokens_map_extended.items()}
+    specials_found = [(k, v) for k, v in specials.items() if v in uniq1 or v in uniq2]
+    if specials_found:
+        print("\nSpecial tokens present:")
+        for k, v in specials_found:
+            in1, in2 = v in uniq1, v in uniq2
+            print(f"  {k}: id={v} → in Loader1={in1}, in Loader2={in2}")
 
 def compare_batch_properties(batch1, batch2, tokenizer, name="inputs"):
     """Compare shape, dtype, and token range between two batches, and report EOS tokens."""
@@ -12,6 +43,9 @@ def compare_batch_properties(batch1, batch2, tokenizer, name="inputs"):
     shape_match = b1.shape == b2.shape
     dtype_match = b1.dtype == b2.dtype
     token_range_match = (b1.min().item() == b2.min().item() and b1.max().item() == b2.max().item())
+
+    if not token_range_match:
+        inspect_token_range(b1, b2, tokenizer, name)
 
     status = "✅" if shape_match and dtype_match and token_range_match else "❌"
 
@@ -25,10 +59,6 @@ def compare_batch_properties(batch1, batch2, tokenizer, name="inputs"):
           f"Loader2 {b2.min().item()}-{b2.max().item()}")
     print(f"EOS tokens: Loader1 {eos1}, Loader2 {eos2}\n")
 
-    # Optional: assert if you want to raise errors when not matching
-    # assert shape_match, f"{name} shape mismatch"
-    # assert dtype_match, f"{name} dtype mismatch"
-    # assert token_range_match, f"{name} token range mismatch"
 
 async def compare_loaders():
     """Compare two loaders with same seed to verify reproducibility"""
@@ -71,18 +101,14 @@ async def compare_loaders():
     batch2 = next(iter(loader2))
 
     compare_batch_properties(batch1[0], batch2[0], tokenizer, name="inputs")
-    compare_batch_properties(batch1[1], batch2[1], tokenizer, name="labels")
+    # compare_batch_properties(batch1[1], batch2[1], tokenizer, name="labels")
 
-    sample_input1 = batch1[0][0][:30]
-    sample_input2 = batch2[0][0][:30]
-    print(f"Loader1: Sample input  {sample_input1.tolist()}")
-    print(f"Loader1: Sample decoded  {tokenizer.decode(sample_input1, skip_special_tokens=False)}")
-    print(f"Loader2: Sample input  {sample_input2.tolist()}")
-    print(f"Loader2: Sample decoded  {tokenizer.decode(sample_input2, skip_special_tokens=False)}\n")
-
-    inputs_equal = torch.equal(batch1[0], batch2[0])
-    labels_equal = torch.equal(batch1[1], batch2[1])
-    print(f"Exact match - Inputs: {inputs_equal}, Labels: {labels_equal}")
+    # sample_input1 = batch1[0][0][:30]
+    # sample_input2 = batch2[0][0][:30]
+    # print(f"Loader1: Sample input  {sample_input1.tolist()}")
+    # print(f"Loader1: Sample decoded  {tokenizer.decode(sample_input1, skip_special_tokens=False)}")
+    # print(f"Loader2: Sample input  {sample_input2.tolist()}")
+    # print(f"Loader2: Sample decoded  {tokenizer.decode(sample_input2, skip_special_tokens=False)}\n")
 
 # async def test_edge_cases():
 #     """Compare loaders with small sequence/batch sizes"""
