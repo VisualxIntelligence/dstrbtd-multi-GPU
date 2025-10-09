@@ -169,12 +169,12 @@ class DatasetLoader(BatchLoader):
             df = df.head(max_rows_per_group)
 
             for row in df["text"]:
-                text = row + self.tokenizer.eos_token
                 token_ids = self.tokenizer.encode(
-                    text, add_special_tokens=False,
+                    row,
+                    truncation=True,
                     max_length=self.sequence_length,
-                    truncation=True
                 )
+                token_ids.append(self.tokenizer.eos_token_id)
                 buffer.extend(token_ids)
         return buffer
 
