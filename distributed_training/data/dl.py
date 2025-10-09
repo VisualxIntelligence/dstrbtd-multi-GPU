@@ -155,8 +155,25 @@ class DatasetLoader(BatchLoader):
         results = await asyncio.gather(*(check_config(c) for c in all_configs))
         return [r for r in results if r]
 
+    async def tokenize_texts(self, texts):
+        """Tokenize multiple texts asynchronously using run_in_executor."""
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(
+                None,
+                lambda t=text: self.tokenizer.encode(
+                    t,
+                    truncation=True,
+                    max_length=self.sequence_length
+                )
+            )
+            for text in texts
+        ]
+        encoded = await asyncio.gather(*tasks)
+        return encoded
+
     async def load_shard(self, shard_path, max_row_groups=2, max_rows_per_group=1):
-        """Load and tokenize text from a single shard."""
+        """Load and tokenize text from a single shard (async)."""
         buffer = []
         row_groups_loaded = 0
         rows_loaded = 0
@@ -174,20 +191,15 @@ class DatasetLoader(BatchLoader):
             row_groups_loaded += 1
             rows_loaded += len(df)
 
-            for row in df["text"]:
-                token_ids = self.tokenizer.encode(
-                    row,
-                    truncation=True,
-                    max_length=self.sequence_length,
-                )
-                token_ids.append(self.tokenizer.eos_token_id)
-                buffer.extend(token_ids)
+            encodings = await self.tokenize_texts(df["text"].tolist())
+            for ids in encodings:
+                ids.append(self.tokenizer.eos_token_id)
+                buffer.extend(ids)
 
         self.total_row_groups_loaded += row_groups_loaded
         self.total_rows_loaded += rows_loaded
 
         return buffer
-
 
     async def gather_configs_and_shards(self, configs=None, max_configs=3, max_shards=3):
         """Collect shard paths from multiple configs."""
@@ -201,7 +213,6 @@ class DatasetLoader(BatchLoader):
         shard_lists = await asyncio.gather(*(get_shards(c) for c in configs))
         all_shards = []
         for config, shards in zip(configs, shard_lists):
-            # print(f"shards for {config}: {len(shards)}")
             all_shards.extend(shards[:max_shards])
 
         self.configs = configs
