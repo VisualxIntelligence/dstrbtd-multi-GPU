@@ -6,10 +6,10 @@ import asyncio
 import torch
 import s3fs
 import pyarrow.parquet as pq
-import pandas as pd
 from dotenv import load_dotenv, find_dotenv
 from transformers import AutoTokenizer
 import bittensor as bt
+import random
 
 
 class BatchLoader:
@@ -60,22 +60,18 @@ class BatchLoader:
     def __len__(self):
         return self._num_batches
 
-    def get_batch(self, batch_size=2):
-        """Yield raw token slices directly from the buffer (without tensorizing)."""
-        for i in range(0, len(self.buffer), batch_size):
-            yield self.buffer[i : i + batch_size]
-
-
 class DatasetLoader(BatchLoader):
     def __init__(
         self,
         max_configs=None,
-        max_shards=None,
-        max_row_groups=None,
+        max_shards=3,
+        max_row_groups=4,
         max_rows_per_group=None,
         tokenizer=None,
         batch_size=None,
         sequence_length=None,
+        debug=None,
+        randomness=None
     ):
         super().__init__(tokenizer=tokenizer, batch_size=batch_size, sequence_length=sequence_length)
 
@@ -87,6 +83,9 @@ class DatasetLoader(BatchLoader):
         self.max_shards = max_shards
         self.max_row_groups = max_row_groups
         self.max_rows_per_group = max_rows_per_group
+
+        self.debug = debug
+        self.randomness = randomness
 
         self.BUCKET = os.getenv("R2_BUCKET_NAME") or (_ for _ in ()).throw(ValueError("R2_BUCKET_NAME env var not set"))
         self.ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID") or (_ for _ in ()).throw(ValueError("R2_ACCOUNT_ID env var not set"))
@@ -113,8 +112,6 @@ class DatasetLoader(BatchLoader):
 
         self.logger.info(f"WELCOME TO THE NEW DATALOADER! {self}")
 
-        self.configs = []
-        self.shards = []
         self.total_row_groups_loaded = 0
         self.total_rows_loaded = 0
 
@@ -172,8 +169,8 @@ class DatasetLoader(BatchLoader):
         encoded = await asyncio.gather(*tasks)
         return encoded
 
-    async def load_shard(self, shard_path, max_row_groups=2, max_rows_per_group=1):
-        """Load and tokenize text from a single shard (async)."""
+    async def load_shard(self, shard_path, max_rows_per_group=2, random_row_groups=False, random_rows=False):
+        """Load and tokenize text from a single shard (async) with timing."""
         buffer = []
         row_groups_loaded = 0
         rows_loaded = 0
@@ -183,15 +180,32 @@ class DatasetLoader(BatchLoader):
             print(f"Failed to open shard {shard_path}: {e}")
             return buffer
 
-        for rg_idx in range(min(reader.num_row_groups, max_row_groups)):
-            row_group = await asyncio.to_thread(reader.read_row_group, rg_idx, columns=["text"])
-            df = await asyncio.to_thread(row_group.to_pandas)
-            df = df.head(max_rows_per_group)
+        num_row_groups = reader.num_row_groups
+
+        if self.randomness or random_row_groups:
+            start_idx = random.randint(0, num_row_groups - self.max_row_groups)
+            rg_indices = list(range(start_idx, start_idx + self.max_row_groups)) # eg. [482, 483]
+        else:
+            rg_indices = list(range(min(self.max_row_groups, num_row_groups)))
+
+        for rg_idx in rg_indices: 
+            row_group = await asyncio.to_thread(reader.read_row_group, rg_idx, columns=["text"], use_threads=True)
+            num_rows = len(row_group)
+
+            start_idx = random.randint(0, num_rows - max_rows_per_group)
+            end_idx = min(start_idx + max_rows_per_group, num_rows)
+
+            if self.randomness or random_rows:
+                start_idx = random.randint(0, num_rows - max_rows_per_group)
+                end_idx = min(start_idx + max_rows_per_group, num_rows)
+                rows = row_group.slice(offset=start_idx, length=end_idx - start_idx)
+            else:
+                rows = row_group.slice(offset=0, length=max_rows_per_group)
 
             row_groups_loaded += 1
-            rows_loaded += len(df)
+            rows_loaded += len(rows)
 
-            encodings = await self.tokenize_texts(df["text"].tolist())
+            encodings = await self.tokenize_texts(rows["text"].to_pylist())
             for ids in encodings:
                 ids.append(self.tokenizer.eos_token_id)
                 buffer.extend(ids)
@@ -201,77 +215,106 @@ class DatasetLoader(BatchLoader):
 
         return buffer
 
-    async def gather_configs_and_shards(self, configs=None, max_configs=3, max_shards=3):
+    async def get_shards_from_configs(self, max_configs=3, random_configs=False, random_shards=False):
         """Collect shard paths from multiple configs."""
-        if configs is None:
-            configs = await self.get_configs_async()
-        configs = configs[:max_configs]
 
-        async def get_shards(config):
-            return await asyncio.to_thread(self.list_shard_files, config)
+        configs = await self.get_configs_async()
+        
+        if self.randomness or random_configs:
+            configs = random.sample(configs, min(len(configs), max_configs))
+        else:
+            configs = configs[:max_configs]
 
-        shard_lists = await asyncio.gather(*(get_shards(c) for c in configs))
-        all_shards = []
-        for config, shards in zip(configs, shard_lists):
-            all_shards.extend(shards[:max_shards])
+        shard_lists = await asyncio.gather(
+            *(asyncio.to_thread(self.list_shard_files, c) for c in configs)
+        )
 
-        self.configs = configs
-        self.shards = all_shards
+        if self.randomness or random_shards:
+            all_shards = [
+                *(
+                    random.sample(shards, min(len(shards), self.max_shards))
+                    for shards in shard_lists
+                )
+            ]
+            all_shards = [shard for sublist in all_shards for shard in sublist]
+        else:
+            all_shards = [shard for shards in shard_lists for shard in shards[:self.max_shards]]
+
+        if self.debug:
+            print(f"Configs: {configs}")
+            print(f"All_shards: {all_shards}\n")
+            print(f"- configs: {len(configs)} (max_configs:{max_configs})")
+            print(f"- Shards: {len(all_shards)} (self.max_shards:{self.max_shards})")
 
         return all_shards
 
-    async def fetch_shard_data(self, shard_paths, max_row_groups=2, max_rows_per_group=1):
+    async def fetch_data_for_shards(self, shard_paths, max_rows_per_group=2):
         """Download and tokenize multiple shards asynchronously."""
+
         semaphore = asyncio.Semaphore(10)
         async def load_with_limit(shard):
             async with semaphore:
-                return await self.load_shard(shard, max_row_groups, max_rows_per_group)
+                return await self.load_shard(
+                    shard_path=shard,
+                    max_rows_per_group=max_rows_per_group
+                )
         results = await asyncio.gather(*(load_with_limit(p) for p in shard_paths))
+
+        if self.debug:
+            print(f"- Row groups: {self.total_row_groups_loaded} (self.max_row_groups:{self.max_row_groups})")
+            print(f"- Rows: {self.total_rows_loaded} (max_rows_per_group:{max_rows_per_group})\n")
+
         return [token for shard_buffer in results for token in shard_buffer]
 
-    async def load_bucket_data_to_buffer(self, configs=None, max_configs=3, max_shards=3, max_row_groups=2, max_rows_per_group=1):
+    async def load_bucket_data_to_buffer(self, max_configs=3, max_rows_per_group=2):
         """High-level pipeline: gather shards → load data → fill buffer."""
-        all_shards = await self.gather_configs_and_shards(configs, max_configs, max_shards)
-        self.buffer = await self.fetch_shard_data(all_shards, max_row_groups, max_rows_per_group)
+        if not self.metadata or not self.shard_sizes:
+            self.load_bucket_configs()
+
+        all_shards = await self.get_shards_from_configs(max_configs=max_configs)
+        
+        start_time = time.perf_counter()
+
+        self.buffer = await self.fetch_data_for_shards(
+            shard_paths=all_shards, 
+            max_rows_per_group=max_rows_per_group
+            )
+        
+        end_time = time.perf_counter()
+        
+        if self.debug:
+                print(f"Buffer length: {len(self.buffer)}\n")
+                print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s\n")
         return self.buffer
 
 
 if __name__ == "__main__":
-    max_configs = 3
-    max_shards = 2
-    max_row_groups = 2
-    max_rows_per_group = 2
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    batch_size = 8
+    tokenizer = AutoTokenizer.from_pretrained("dstrbtd/llama-1b", use_fast=True)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    debug = True
+    randomness = True
     sequence_length = 1024
 
+    max_configs = 3
+    max_rows_per_group = 100
+
+    batch_size = 4
+
     loader = DatasetLoader(
-        tokenizer=tokenizer,
+        debug=debug,
+        randomness=randomness,
         sequence_length=sequence_length,
+        tokenizer=tokenizer,        
     )
-
-    loader.load_bucket_configs()
-
-    start_time = time.perf_counter()
 
     asyncio.run(loader.load_bucket_data_to_buffer(
         max_configs=max_configs,
-        max_shards=max_shards,
-        max_row_groups=max_row_groups,
         max_rows_per_group=max_rows_per_group
     ))
 
-    end_time = time.perf_counter()
-    print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s")
-
-    print(f"- len(loader.configs): {len(loader.configs)} max_configs={max_configs}")
-    print(f"- len(loader.shards): {len(loader.shards)} max_shards={max_shards}")
-    print(f"- Row groups loaded: {loader.total_row_groups_loaded} max_row_groups={max_row_groups}")
-    print(f"- Rows loaded: {loader.total_rows_loaded} max_rows_per_group={max_rows_per_group}\n")
-
-    print(f"len(loader.buffer): {len(loader.buffer)}\n")
-
-    loader.prepare_batches(batch_size=batch_size, sequence_length=sequence_length)
+    loader.prepare_batches(batch_size=batch_size)
+    
     print(f"Batches: {len(loader)}")
 
     for i, (inputs, labels) in enumerate(loader):

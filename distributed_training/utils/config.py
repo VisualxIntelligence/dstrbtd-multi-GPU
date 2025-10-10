@@ -267,34 +267,6 @@ def add_args(cls, parser, prefix=None):
         default="distributed-training",
     )
 
-    # parser.add_argument(
-    #     "--neuron.r2_bucket_name",
-    #     type=str,
-    #     help="The name of the S3 bucket or storage bucket to use.",
-    #     default="default-bucket",
-    # )
-
-    # parser.add_argument(
-    #     "--neuron.r2_account_id",
-    #     type=str,
-    #     help="The account ID for the S3 bucket",
-    #     default="3lkjhf9f938429498523iurhf9238rhweh",
-    # )
-
-    # parser.add_argument(
-    #     "--neuron.r2_access_key",
-    #     type=str,
-    #     help="The access key for the S3 bucket",
-    #     default="3lkjhf9f938429498523iurhf9238rhweh",
-    # )
-
-    # parser.add_argument(
-    #     "--neuron.r2_secret_key",
-    #     type=str,
-    #     help="The secret key for the S3 bucket",
-    #     default="3lkjhf9f938429498523iurhf9238rhweh",
-    # )
-
     parser.add_argument(
         "--neuron.use_dct",
         action="store_true",

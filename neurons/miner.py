@@ -388,8 +388,6 @@ class Miner(BaseMinerNeuron):
         self.batch_count = 0
         self.last_allreduce_block = None
 
-        # self.bucket_name = self.config.neuron.bucket_name
-
     def _load_gradient_compressors(self):
         # Init compression
         self.transformer = TransformDCT(
@@ -787,64 +785,34 @@ class Miner(BaseMinerNeuron):
         self.logger.info(":white_heavy_check_mark: Resuming continuous training.")
 
     async def fetch_training_data(self):
-        self.logger.info("DEBUG: start of: fetch_training_data.")
-        self.logger.info(f"self.local_batch_size_train: {self.local_batch_size_train}")
-        # self.logger.info(f"self.bucket_name: {self.bucket_name}")
-
-
         """Async function to fetch training data"""
         attempt = 0
         while attempt < self.retry_limit:
             try:
-                # pages = await DatasetLoader.next_pages(
-                #     offset=self.current_block,
-                #     n_pages=35,
-                #     seed=self.uid,
-                # )
-                # random.seed(self.uid)
-                # random.shuffle(pages)
-
-                # dataset = await DatasetLoader.create(
-                #     batch_size=self.config.neuron.local_batch_size_train,
-                #     sequence_length=1024,
-                #     pages_info=pages,
-                #     tokenizer=self.tokenizer,
-                # )
-
-                max_configs = 3
-                max_shards = 2
-                max_row_groups = 2
-                max_rows_per_group = 2
-                tokenizer = AutoTokenizer.from_pretrained("gpt2")
-                batch_size = self.local_batch_size_train
+                debug = True
+                randomness = False
                 sequence_length = 1024
 
-                dataset = DatasetLoader(
-                    tokenizer=tokenizer,
+                max_configs = 3
+                max_rows_per_group = 2  
+
+                batch_size = 4
+
+                loader = DatasetLoader(
+                    debug=debug,
+                    randomness=randomness,
                     sequence_length=sequence_length,
+                    tokenizer=self.tokenizer,
                 )
 
-                dataset.load_bucket_configs()
-
-                start_time = time.perf_counter()
-                cpu_before = psutil.cpu_percent(interval=None)
-
-                await dataset.load_bucket_data_to_buffer(
+                await loader.load_bucket_data_to_buffer(
                     max_configs=max_configs,
-                    max_shards=max_shards,
-                    max_row_groups=max_row_groups,
                     max_rows_per_group=max_rows_per_group
                 )
 
-                cpu_after = psutil.cpu_percent(interval=None)
-                end_time = time.perf_counter()
-                print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s, CPU usage ~{cpu_after - cpu_before:.2f}%")
+                loader.prepare_batches(batch_size=batch_size)
 
-                print(f"len(dataset.buffer): {len(dataset.buffer)}")
-
-                dataset.prepare_batches(batch_size=batch_size, sequence_length=sequence_length)
-
-                return dataset
+                return loader
             except Exception as e:
                 self.logger.error(f"Error fetching training data: {str(e)}")
                 attempt += 1
