@@ -88,10 +88,10 @@ class DatasetLoader(BatchLoader):
         self.max_row_groups = max_row_groups
         self.max_rows_per_group = max_rows_per_group
 
-        self.BUCKET = os.getenv("R2_BUCKET") or (_ for _ in ()).throw(ValueError("R2_BUCKET env var not set"))
+        self.BUCKET = os.getenv("R2_BUCKET_NAME") or (_ for _ in ()).throw(ValueError("R2_BUCKET_NAME env var not set"))
         self.ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID") or (_ for _ in ()).throw(ValueError("R2_ACCOUNT_ID env var not set"))
-        self.ACCESS_KEY = os.getenv("R2_ACCESS_KEY") or (_ for _ in ()).throw(ValueError("R2_ACCESS_KEY env var not set"))
-        self.SECRET_KEY = os.getenv("R2_SECRET_KEY") or (_ for _ in ()).throw(ValueError("R2_SECRET_KEY env var not set"))
+        self.ACCESS_KEY = os.getenv("R2_ADMIN_ACCESS_KEY_ID") or (_ for _ in ()).throw(ValueError("R2_ADMIN_ACCESS_KEY_ID env var not set"))
+        self.SECRET_KEY = os.getenv("R2_ADMIN_SECRET_ACCESS_KEY") or (_ for _ in ()).throw(ValueError("R2_ADMIN_SECRET_ACCESS_KEY env var not set"))
 
         self.DATASET = "HuggingFaceFW_fineweb-edu-score-2"
         self.META_NAME = "_metadata.yaml"
