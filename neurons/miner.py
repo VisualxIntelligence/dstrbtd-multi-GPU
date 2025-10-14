@@ -66,7 +66,7 @@ from distributed_training import __run__
 
 # from distributed_training.averaging.avg_handler import AllReduceError
 from distributed_training.base.miner import BaseMinerNeuron, TrainingStatus
-from distributed_training.data.dataset import DatasetLoader
+from distributed_training.data.dl import DatasetLoader
 from distributed_training.utils.chain import log_peerid_to_chain
 from distributed_training.utils.misc import (
     init_dht,
@@ -789,22 +789,32 @@ class Miner(BaseMinerNeuron):
         attempt = 0
         while attempt < self.retry_limit:
             try:
-                pages = await DatasetLoader.next_pages(
-                    offset=self.current_block,
-                    n_pages=35,
-                    seed=self.uid,
-                )
-                random.seed(self.uid)
-                random.shuffle(pages)
+                debug = True
+                randomness = True
+                sequence_length = 1024
 
-                dataset = await DatasetLoader.create(
-                    batch_size=self.config.neuron.local_batch_size_train,
-                    sequence_length=1024,
-                    pages_info=pages,
+                max_configs = 3
+                max_rows_per_group = 100
+
+                batch_size = 4
+
+                loader = DatasetLoader(
+                    debug=debug,
+                    randomness=randomness,
+                    sequence_length=sequence_length,
                     tokenizer=self.tokenizer,
+                    uid=self.uid,
+                    current_block=self.current_block,
                 )
 
-                return dataset
+                await loader.load_bucket_data_to_buffer(
+                    max_configs=max_configs,
+                    max_rows_per_group=max_rows_per_group
+                )
+
+                loader.prepare_batches(batch_size=batch_size)
+
+                return loader
             except Exception as e:
                 self.logger.error(f"Error fetching training data: {str(e)}")
                 attempt += 1
