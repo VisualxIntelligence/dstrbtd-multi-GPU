@@ -790,11 +790,11 @@ class Miner(BaseMinerNeuron):
         while attempt < self.retry_limit:
             try:
                 debug = True
-                randomness = False
+                randomness = True
                 sequence_length = 1024
 
                 max_configs = 3
-                max_rows_per_group = 2  
+                max_rows_per_group = 100
 
                 batch_size = 4
 
