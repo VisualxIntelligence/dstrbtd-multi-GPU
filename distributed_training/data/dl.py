@@ -113,8 +113,6 @@ class DatasetLoader(BatchLoader):
         self.metadata = {}
         self.shard_sizes = {}
 
-        self.logger.info(f"WELCOME TO THE NEW DATALOADER! {self}")
-
         self.total_row_groups_loaded = 0
         self.total_rows_loaded = 0
 
@@ -133,14 +131,14 @@ class DatasetLoader(BatchLoader):
         rng = self.generate_rng("config_selection")
         n = min(len(configs), max_configs)
         indexes = rng.sample(range(len(configs)), n)
-        # self.debug and print(f"Config idxs chosen: {indexes}")
+        self.debug and print(f"Config idxs chosen: {indexes}")
         return [configs[i] for i in indexes]
 
     def select_shards(self, shards, max_shards, context="shard_selection"):
         rng = self.generate_rng(context)
         n = min(len(shards), max_shards)
         indexes = rng.sample(range(len(shards)), n)
-        # self.debug and print(f"Shard idxs chosen: {indexes}")
+        self.debug and print(f"Shard idxs chosen: {indexes}")
         return [shards[i] for i in indexes]
 
     def select_row_groups(self, num_row_groups, max_row_groups, context="row_group"):
@@ -206,7 +204,7 @@ class DatasetLoader(BatchLoader):
             selected = self.select_shards(shards, self.max_shards, context=f"shard_{shards[0] if shards else ''}")
             all_shards.extend(selected)
 
-        self.debug and print(f"All_shards: {all_shards}\n")
+        # self.debug and print(f"All_shards: {all_shards}\n")
         return all_shards          
 
     async def get_configs(self):
