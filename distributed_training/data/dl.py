@@ -128,54 +128,7 @@ class DatasetLoader(BatchLoader):
         # self.debug and print(f"seed_str: {seed_str}")
         seed = int(hashlib.sha256(seed_str.encode()).hexdigest(), 16) % (2**32)
         return random.Random(seed)
-
-    def download_config(self, remote_path, local_path):
-        if os.path.exists(local_path):
-            return
-        data = self.fs.cat(remote_path)
-        with open(local_path, "wb") as dst:
-            dst.write(data)
-
-    def load_bucket_configs(self):
-        self.download_config(f"{self.BUCKET}/{self.DATASET}/{self.META_NAME}", self.meta_cache_path)
-        self.download_config(f"{self.BUCKET}/{self.DATASET}/{self.SHARD_NAME}", self.shard_cache_path)
-
-        with open(self.meta_cache_path, "r") as f:
-            self.metadata = yaml.safe_load(f)
-
-        with open(self.shard_cache_path, "r") as f:
-            self.shard_sizes = json.load(f)
-
-    def list_shard_files(self, config):
-        config_info = self.shard_sizes.get(config, {})
-        shards = config_info.get("shards", [])
-        return [shard["path"] for shard in shards]
-
-    async def get_configs(self):
-        all_configs = [c.get("config_name") for c in self.metadata.get("configs", []) if c.get("config_name")]
-        async def check_config(config):
-            config_path = f"{self.BUCKET}/{self.DATASET}/{config}"
-            exists = await asyncio.to_thread(self.fs.exists, config_path)
-            return config if exists else None
-        results = await asyncio.gather(*(check_config(c) for c in all_configs))
-        return [r for r in results if r]
-
-    async def tokenize_texts(self, texts):
-        loop = asyncio.get_event_loop()
-        tasks = [
-            loop.run_in_executor(
-                None,
-                lambda t=text: self.tokenizer.encode(
-                    t,
-                    truncation=True,
-                    max_length=self.sequence_length
-                )
-            )
-            for text in texts
-        ]
-        encoded = await asyncio.gather(*tasks)
-        return encoded
-
+    
     def select_configs(self, configs, max_configs):
         rng = self.generate_rng("config_selection")
         n = min(len(configs), max_configs)
@@ -204,6 +157,81 @@ class DatasetLoader(BatchLoader):
         self.debug and print(f"row idxs chosen: {list(range(start_idx, end_idx))} out of {num_rows}")
         return start_idx, end_idx
 
+    async def load_bucket_data_to_buffer(self, max_configs=3, max_rows_per_group=2):
+        if not self.metadata or not self.shard_sizes:
+            self.load_bucket_configs()
+
+        all_shards = await self.get_shards_from_configs(max_configs=max_configs)
+        start_time = time.perf_counter()
+
+        self.buffer = await self.fetch_data_for_shards(
+            shard_paths=all_shards, 
+            max_rows_per_group=max_rows_per_group
+        )
+
+        end_time = time.perf_counter()
+        if self.debug:
+            print(f"Buffer length: {len(self.buffer)}")
+            print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s\n")
+
+        exit(1)
+        return self.buffer
+
+    def load_bucket_configs(self):
+        self.download_config(f"{self.BUCKET}/{self.DATASET}/{self.META_NAME}", self.meta_cache_path)
+        self.download_config(f"{self.BUCKET}/{self.DATASET}/{self.SHARD_NAME}", self.shard_cache_path)
+
+        with open(self.meta_cache_path, "r") as f:
+            self.metadata = yaml.safe_load(f)
+
+        with open(self.shard_cache_path, "r") as f:
+            self.shard_sizes = json.load(f)
+
+    def download_config(self, remote_path, local_path):
+        if os.path.exists(local_path):
+            return
+        data = self.fs.cat(remote_path)
+        with open(local_path, "wb") as dst:
+            dst.write(data)            
+
+    async def get_shards_from_configs(self, max_configs=3):
+        configs = await self.get_configs()
+        configs = self.select_configs(configs, max_configs)
+
+        shard_lists = await asyncio.gather(
+            *(asyncio.to_thread(self.list_shard_files, c) for c in configs)
+        )
+
+        all_shards = []
+        for shards in shard_lists:
+            selected = self.select_shards(shards, self.max_shards, context=f"shard_{shards[0] if shards else ''}")
+            all_shards.extend(selected)
+
+        self.debug and print(f"All_shards: {all_shards}\n")
+        return all_shards          
+
+    async def get_configs(self):
+        all_configs = [c.get("config_name") for c in self.metadata.get("configs", []) if c.get("config_name")]
+        async def check_config(config):
+            config_path = f"{self.BUCKET}/{self.DATASET}/{config}"
+            exists = await asyncio.to_thread(self.fs.exists, config_path)
+            return config if exists else None
+        results = await asyncio.gather(*(check_config(c) for c in all_configs))
+        return [r for r in results if r]
+
+    def list_shard_files(self, config):
+        config_info = self.shard_sizes.get(config, {})
+        shards = config_info.get("shards", [])
+        return [shard["path"] for shard in shards]
+            
+    async def fetch_data_for_shards(self, shard_paths, max_rows_per_group=2):
+        semaphore = asyncio.Semaphore(10)
+        async def load_with_limit(shard):
+            async with semaphore:
+                return await self.load_shard(shard_path=shard, max_rows_per_group=max_rows_per_group)
+        results = await asyncio.gather(*(load_with_limit(p) for p in shard_paths))
+        return [token for shard_buffer in results for token in shard_buffer]
+    
     async def load_shard(self, shard_path, max_rows_per_group=2):
         buffer = []
         try:
@@ -230,51 +258,22 @@ class DatasetLoader(BatchLoader):
             self.total_rows_loaded += len(rows)
 
         return buffer
-
-    async def get_shards_from_configs(self, max_configs=3):
-        configs = await self.get_configs()
-        configs = self.select_configs(configs, max_configs)
-
-        shard_lists = await asyncio.gather(
-            *(asyncio.to_thread(self.list_shard_files, c) for c in configs)
-        )
-
-        all_shards = []
-        for shards in shard_lists:
-            selected = self.select_shards(shards, self.max_shards, context=f"shard_{shards[0] if shards else ''}")
-            all_shards.extend(selected)
-
-        self.debug and print(f"All_shards: {all_shards}\n")
-        return all_shards
-
-    async def fetch_data_for_shards(self, shard_paths, max_rows_per_group=2):
-        semaphore = asyncio.Semaphore(10)
-        async def load_with_limit(shard):
-            async with semaphore:
-                return await self.load_shard(shard_path=shard, max_rows_per_group=max_rows_per_group)
-        results = await asyncio.gather(*(load_with_limit(p) for p in shard_paths))
-        return [token for shard_buffer in results for token in shard_buffer]
-
-    async def load_bucket_data_to_buffer(self, max_configs=3, max_rows_per_group=2):
-        if not self.metadata or not self.shard_sizes:
-            self.load_bucket_configs()
-
-        all_shards = await self.get_shards_from_configs(max_configs=max_configs)
-        start_time = time.perf_counter()
-
-        self.buffer = await self.fetch_data_for_shards(
-            shard_paths=all_shards, 
-            max_rows_per_group=max_rows_per_group
-        )
-
-        end_time = time.perf_counter()
-        if self.debug:
-            print(f"Buffer length: {len(self.buffer)}")
-            print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s\n")
-
-        exit(1)
-        return self.buffer
-
+    
+    async def tokenize_texts(self, texts):
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(
+                None,
+                lambda t=text: self.tokenizer.encode(
+                    t,
+                    truncation=True,
+                    max_length=self.sequence_length
+                )
+            )
+            for text in texts
+        ]
+        encoded = await asyncio.gather(*tasks)
+        return encoded
 
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("dstrbtd/llama-1b", use_fast=True)
