@@ -793,8 +793,8 @@ class Miner(BaseMinerNeuron):
                 randomness = True
                 sequence_length = 1024
 
-                max_configs = 2
-                max_rows_per_group = 2
+                max_configs = 3
+                max_rows_per_group = 100
 
                 batch_size = 4
 

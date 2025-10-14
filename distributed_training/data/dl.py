@@ -66,8 +66,8 @@ class DatasetLoader(BatchLoader):
         uid: int,
         current_block: int = 0,
         max_configs=None,
-        max_shards=2,
-        max_row_groups=2,
+        max_shards=3,
+        max_row_groups=4,
         max_rows_per_group=None,
         tokenizer=None,
         batch_size=None,
@@ -133,28 +133,28 @@ class DatasetLoader(BatchLoader):
         rng = self.generate_rng("config_selection")
         n = min(len(configs), max_configs)
         indexes = rng.sample(range(len(configs)), n)
-        self.debug and print(f"Config idxs chosen: {indexes}")
+        # self.debug and print(f"Config idxs chosen: {indexes}")
         return [configs[i] for i in indexes]
 
     def select_shards(self, shards, max_shards, context="shard_selection"):
         rng = self.generate_rng(context)
         n = min(len(shards), max_shards)
         indexes = rng.sample(range(len(shards)), n)
-        self.debug and print(f"Shard idxs chosen: {indexes}")
+        # self.debug and print(f"Shard idxs chosen: {indexes}")
         return [shards[i] for i in indexes]
 
     def select_row_groups(self, num_row_groups, max_row_groups, context="row_group"):
         rng = self.generate_rng(context)
         start_idx = rng.randint(0, num_row_groups - max_row_groups) if num_row_groups > max_row_groups else 0
         rg_indices = list(range(start_idx, start_idx + max_row_groups))
-        self.debug and print(f"row_group idxs chosen: {rg_indices} out of {num_row_groups}")
+        # self.debug and print(f"row_group idxs chosen: {rg_indices} out of {num_row_groups}")
         return rg_indices
 
     def select_rows(self, num_rows, max_rows_per_group, context="row"):
         rng = self.generate_rng(context)
         start_idx = rng.randint(0, num_rows - max_rows_per_group) if num_rows > max_rows_per_group else 0
         end_idx = min(start_idx + max_rows_per_group, num_rows)
-        self.debug and print(f"row idxs chosen: {list(range(start_idx, end_idx))} out of {num_rows}")
+        # self.debug and print(f"row idxs chosen: {list(range(start_idx, end_idx))} out of {num_rows}")
         return start_idx, end_idx
 
     async def load_bucket_data_to_buffer(self, max_configs=3, max_rows_per_group=2):
@@ -174,7 +174,6 @@ class DatasetLoader(BatchLoader):
             print(f"Buffer length: {len(self.buffer)}")
             print(f"load_bucket_data_to_buffer took {end_time - start_time:.2f}s\n")
 
-        exit(1)
         return self.buffer
 
     def load_bucket_configs(self):
@@ -282,8 +281,8 @@ if __name__ == "__main__":
     debug = True
     randomness = True
 
-    miner_uid = 175
-    current_block = 1000    
+    miner_uid = 20
+    current_block = 5597807    
 
     max_configs = 3
     max_rows_per_group = 100
