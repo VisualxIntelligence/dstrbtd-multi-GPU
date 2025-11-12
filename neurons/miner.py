@@ -32,8 +32,10 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 # torch.use_deterministic_algorithms(True)
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
+# Enable TF32 for L40 GPUs for improved performance
+# TF32 provides ~8x speedup on Ampere and Ada Lovelace architectures with minimal accuracy impact
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 import asyncio
 import gc
