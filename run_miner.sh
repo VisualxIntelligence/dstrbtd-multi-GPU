@@ -215,7 +215,7 @@ joined_args=$(printf "%s," "${args[@]}")
 # Remove the trailing comma
 joined_args=${joined_args%,}
 
-# Create the pm2 config file
+# Create the pm2 config file with L40 GPU optimizations
 echo "module.exports = {
   apps : [{
     name   : '$proc_name',
@@ -224,7 +224,39 @@ echo "module.exports = {
     interpreter_args: '--nproc_per_node=' + '$NODES',
     min_uptime: '5m',
     max_restarts: '5',
-    args: [$joined_args]
+    args: [$joined_args],
+    env: {
+      // CUDA and cuDNN optimizations for L40 GPUs
+      'CUDA_LAUNCH_BLOCKING': '0',
+      'CUDNN_BENCHMARK': '1',
+      'TORCH_CUDNN_V8_API_ENABLED': '1',
+      'CUDA_DEVICE_MAX_CONNECTIONS': '1',
+
+      // NCCL optimizations for multi-GPU L40 setup (PCIe-based)
+      'NCCL_IB_DISABLE': '1',
+      'NCCL_P2P_LEVEL': 'PHB',
+      'NCCL_P2P_DISABLE': '0',
+      'NCCL_SHM_DISABLE': '0',
+      'NCCL_ALGO': 'Ring,Tree',
+      'NCCL_PROTO': 'Simple',
+      'NCCL_MIN_NCHANNELS': '4',
+      'NCCL_NSOCKS_PERTHREAD': '4',
+      'NCCL_SOCKET_NTHREADS': '4',
+      'NCCL_BUFFSIZE': '8388608',
+      'NCCL_DEBUG': 'WARN',
+
+      // PyTorch memory and performance optimizations
+      'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512,expandable_segments:True',
+      'OMP_NUM_THREADS': '30',
+      'MKL_NUM_THREADS': '30',
+
+      // Enable TensorFloat-32 for L40 GPUs (overrides code settings)
+      'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+
+      // Additional performance optimizations
+      'TORCH_NCCL_ASYNC_ERROR_HANDLING': '1',
+      'TORCH_DISTRIBUTED_DEBUG': 'OFF'
+    }
   }]
 }" > app.config.js
 
